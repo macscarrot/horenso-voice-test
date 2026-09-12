@@ -5,37 +5,61 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>音声入力 単体テスト</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202124;font:17px/1.5 -apple-system,BlinkMacSystemFont,sans-serif}main{max-width:560px;margin:auto;padding:24px 16px 48px}.card{background:#fff;border:1px solid #dadce0;border-radius:18px;padding:18px}h1{font-size:22px;margin:0 0 10px}.status{min-height:52px;padding:12px;border-radius:12px;background:#eef3fd;margin:12px 0;white-space:pre-wrap}.mic{display:block;width:112px;height:112px;border-radius:56px;border:0;background:#1a73e8;color:#fff;font-size:44px;margin:22px auto}.mic.recording{background:#b3261e}button{font:inherit;min-height:48px;padding:10px 14px;border:1px solid #c8ccd0;border-radius:12px;background:#fff;color:#174ea6}.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}.muted{color:#6b7280;font-size:14px}.ok{color:#137333}.bad{color:#b3261e}</style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202124;font:17px/1.5 -apple-system,BlinkMacSystemFont,sans-serif}main{max-width:560px;margin:auto;padding:24px 16px 48px}.card{background:#fff;border:1px solid #dadce0;border-radius:18px;padding:18px}h1{font-size:22px;margin:0 0 10px}.status{min-height:52px;padding:12px;border-radius:12px;background:#eef3fd;margin:12px 0;white-space:pre-wrap}.mic{display:block;width:112px;height:112px;border-radius:56px;border:0;background:#1a73e8;color:#fff;font-size:44px;margin:22px auto}.mic.recording{background:#b3261e}button,input{font:inherit}button{min-height:48px;padding:10px 14px;border:1px solid #c8ccd0;border-radius:12px;background:#fff;color:#174ea6}.primary{background:#1a73e8;color:#fff;border:0}.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}.muted{color:#6b7280;font-size:14px}.ok{color:#137333}.bad{color:#b3261e}.setup{margin-top:18px;padding-top:16px;border-top:1px solid #e5e7eb}.setup input{width:100%;min-height:46px;padding:10px;border:1px solid #c8ccd0;border-radius:10px}.transcript{margin-top:14px;padding:14px;border-radius:12px;background:#f8f9fa;white-space:pre-wrap;min-height:58px}</style>
 </head>
 <body><main><div class="card">
 <h1>音声入力 単体テスト</h1>
-<p class="muted">GASとは切り離して、iPhoneのマイク取得だけを確認します。録音データはこのページ内だけに保持し、どこにも送信しません。</p>
+<p class="muted">録音は端末内に保持します。文字起こしを押した場合だけ、設定した中継先からOpenAIへ音声を送ります。</p>
 <div id="status" class="status">マイクボタンを押してください。</div>
 <button id="mic" class="mic" type="button" aria-label="録音開始">🎙</button>
-<div class="actions"><button id="play" type="button" disabled>録音を再生</button><button id="reset" type="button">やり直す</button></div>
+<div class="actions"><button id="play" type="button" disabled>録音を再生</button><button id="transcribe" class="primary" type="button" disabled>文字起こし</button><button id="reset" type="button">やり直す</button></div>
 <audio id="audio" controls hidden></audio>
 <p id="detail" class="muted"></p>
+<div id="transcript" class="transcript">文字起こし結果がここに表示されます。</div>
+<div class="setup">
+  <p class="muted">初回だけ、中継用WorkerのURLを入れます。保存先はこの端末のブラウザ内だけです。</p>
+  <input id="gateway" type="url" inputmode="url" placeholder="https://xxxxx.workers.dev/">
+  <div class="actions" style="margin-top:10px"><button id="saveGateway" type="button">中継URLを保存</button></div>
+</div>
 </div></main>
 <script>
 'use strict';
-const statusEl=document.getElementById('status'),mic=document.getElementById('mic'),play=document.getElementById('play'),reset=document.getElementById('reset'),audio=document.getElementById('audio'),detail=document.getElementById('detail');
-let stream=null,recorder=null,chunks=[],blobUrl='';
+const statusEl=document.getElementById('status'),mic=document.getElementById('mic'),play=document.getElementById('play'),transcribe=document.getElementById('transcribe'),reset=document.getElementById('reset'),audio=document.getElementById('audio'),detail=document.getElementById('detail'),transcript=document.getElementById('transcript'),gateway=document.getElementById('gateway'),saveGateway=document.getElementById('saveGateway');
+let stream=null,recorder=null,chunks=[],blobUrl='',audioBlob=null;
+gateway.value=localStorage.getItem('horensoVoiceGateway')||'';
 function say(text,kind=''){statusEl.textContent=text;statusEl.className='status '+kind;}
 function cleanupStream(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
-function resetAll(){if(recorder&&recorder.state==='recording')recorder.stop();cleanupStream();chunks=[];if(blobUrl)URL.revokeObjectURL(blobUrl);blobUrl='';audio.removeAttribute('src');audio.hidden=true;play.disabled=true;mic.classList.remove('recording');mic.textContent='🎙';mic.setAttribute('aria-label','録音開始');say('マイクボタンを押してください。');detail.textContent='';}
+function resetAll(){if(recorder&&recorder.state==='recording')recorder.stop();cleanupStream();chunks=[];audioBlob=null;if(blobUrl)URL.revokeObjectURL(blobUrl);blobUrl='';audio.removeAttribute('src');audio.hidden=true;play.disabled=true;transcribe.disabled=true;mic.classList.remove('recording');mic.textContent='🎙';mic.setAttribute('aria-label','録音開始');say('マイクボタンを押してください。');detail.textContent='';transcript.textContent='文字起こし結果がここに表示されます。';}
 async function startRecording(){
  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){say('この環境ではマイク取得を利用できません。HTTPSで開いているか確認してください。','bad');return;}
  try{
   stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
   chunks=[];recorder=new MediaRecorder(stream);
   recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
-  recorder.onstop=()=>{const type=recorder.mimeType||'audio/webm';const blob=new Blob(chunks,{type});if(blobUrl)URL.revokeObjectURL(blobUrl);blobUrl=URL.createObjectURL(blob);audio.src=blobUrl;audio.hidden=false;play.disabled=false;cleanupStream();mic.classList.remove('recording');mic.textContent='🎙';mic.setAttribute('aria-label','録音開始');say('録音できました。再生して音声を確認してください。','ok');detail.textContent='形式: '+type+' / '+Math.round(blob.size/1024)+' KB';};
+  recorder.onstop=()=>{const type=recorder.mimeType||'audio/webm';audioBlob=new Blob(chunks,{type});if(blobUrl)URL.revokeObjectURL(blobUrl);blobUrl=URL.createObjectURL(audioBlob);audio.src=blobUrl;audio.hidden=false;play.disabled=false;transcribe.disabled=false;cleanupStream();mic.classList.remove('recording');mic.textContent='🎙';mic.setAttribute('aria-label','録音開始');say('録音できました。次は「文字起こし」を押してください。','ok');detail.textContent='形式: '+type+' / '+Math.round(audioBlob.size/1024)+' KB';};
   recorder.start();mic.classList.add('recording');mic.textContent='■';mic.setAttribute('aria-label','録音停止');say('録音中です。もう一度押すと停止します。');
  }catch(e){cleanupStream();say('マイクを開始できませんでした: '+(e.name||'Error')+'\nSafariのマイク権限も確認してください。','bad');detail.textContent=String(e&&e.message||e);}
 }
+function blobToBase64(blob){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=reject;r.readAsDataURL(blob);});}
+async function doTranscribe(){
+ const url=(gateway.value||'').trim();
+ if(!url){say('先に中継用WorkerのURLを設定してください。','bad');return;}
+ if(!audioBlob){say('先に録音してください。','bad');return;}
+ transcribe.disabled=true;say('OpenAIで文字起こし中です…');transcript.textContent='処理中…';
+ try{
+  const audioBase64=await blobToBase64(audioBlob);
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audioBase64,mimeType:audioBlob.type||'audio/webm'})});
+  const data=await r.json();
+  if(!r.ok)throw new Error(data.detail||data.error||('HTTP '+r.status));
+  transcript.textContent=data.text||'（文字起こし結果が空でした）';say('文字起こしできました。','ok');
+ }catch(e){transcript.textContent='';say('文字起こしに失敗しました。','bad');detail.textContent=String(e&&e.message||e);}
+ finally{transcribe.disabled=false;}
+}
 mic.onclick=()=>{if(recorder&&recorder.state==='recording'){recorder.stop();return;}startRecording();};
 play.onclick=()=>{if(blobUrl)audio.play();};
+transcribe.onclick=doTranscribe;
 reset.onclick=resetAll;
+saveGateway.onclick=()=>{const url=(gateway.value||'').trim();if(!url){localStorage.removeItem('horensoVoiceGateway');say('中継URLを消しました。');return;}localStorage.setItem('horensoVoiceGateway',url);say('中継URLを保存しました。','ok');};
 window.addEventListener('pagehide',cleanupStream);
 </script>
 </body></html>
